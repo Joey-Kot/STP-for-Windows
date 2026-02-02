@@ -40,10 +40,8 @@
 2. 获取依赖（模块模式）并构建：
 
 ```bash
-go mod init stp   # 如果尚未初始化
-go get github.com/atotto/clipboard github.com/micmonay/keybd_event golang.org/x/net/http2
 go mod tidy
-go build -o stp.exe main.go
+go build -o stp.exe ./cmd/stp
 ```
 
 3. 直接运行 `stp.exe`，或将其放在 PATH 中方便调用。
@@ -72,7 +70,7 @@ go mod tidy
 交叉静态构建 stp.exe，尽量让链接器静态链接 CRT
 
 ```bash
-PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stp.exe main.go
+PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stp.exe ./cmd/stp
 ```
 
 ## 配置文件说明（config.json）
@@ -94,6 +92,8 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stp.exe
 - EnableHTTP2 (bool) — 是否启用 HTTP/2（默认 true）
 - VerifySSL (bool) — 是否验证 SSL（默认 true）
 - ClipboardTimeout (int) — 剪贴板超时时间（ms，默认 1000）
+- RequestFailedNotification (bool) — 请求失败或提取为空时，是否粘贴占位符（默认 false）
+- StopTaskHotkey (string) — 取消当前请求并清空等待队列的全局热键（默认空字符串，不启用）
 - HotKeyConfig ([]HotKeyEntry) — 热键配置数组，每项包含 Prompt、HotKey 与 ExtraConfig
 - HotKeyHook (bool) — 是否使用低级键盘钩子（WH_KEYBOARD_LL）
 - DEBUG (bool) — 启用详细日志输出
@@ -156,11 +156,18 @@ HotKeyEntry 结构：
 - -enable-http2 <true|false>
 - -verify-ssl <true|false>
 - -clipboard-timeout <int>
+- -request-failed-notification <true|false>
+- -stop-task-hotkey <string>
 - -hotkeyhook <true|false>
 - -debug <true|false>
 - -h                     帮助
 
 程序会在启动时根据配置构建要注册的热键表。若没有有效的配置项（例如所有 Prompt 或 HotKey 都为空），程序会打印提示并退出。
+
+StopTaskHotkey 行为：
+- 触发后会取消当前正在执行的请求（包括重试/退避等待）
+- 同时清空等待中的热键任务队列
+- 后续普通热键仍可继续正常触发新任务
 
 ## 运行与使用
 
@@ -198,6 +205,11 @@ objShell.Run "stp -config C:\Users\xxx\stp-config.json", 0
   - 优先级：数组内热键条目 ExtraConfig > 全局 ExtraConfig > 内置字段
   - 可用于注入、覆盖任意自定义参数（如 verbosity 等）
   - 将键值设置为`null`即为删除请求中的该字段（\"max_tokens\": null，表示删除max_tokens字段）
+
+RequestFailedNotification 行为：
+- 设为 true：请求重试耗尽失败时粘贴 `[request failed]`
+- 设为 true：请求成功但 TEXTPath 提取为空时粘贴 `[empty result]`
+- 设为 false：保持静默，不粘贴占位符
 
 ## 剪贴板与按键模拟
 
