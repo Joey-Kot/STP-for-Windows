@@ -176,7 +176,7 @@ func Usage(w io.Writer, program string) {
     {
       "Prompt": "Please translate the following text into Chinese:",
       "HotKey": "ctrl+f2",
-      "ExtraConfig": "{\"max_tokens\":,\"verbosity":\"\"}"
+      "ExtraConfig": "{\"max_tokens\":null,\"verbosity":\"\"}"
     },
     {
       "Prompt": "Extract keywords:",
