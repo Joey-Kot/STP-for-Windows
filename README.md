@@ -2,7 +2,7 @@
 
 ## 简介
 
-这是一个面向 Windows 平台的基于本地剪贴板与全局热键的 LLM 文本处理客户端。按下配置的热键后，程序会复制当前选中的文本（模拟 Ctrl+C），将文本和对应的提示词（Prompt）一起发送到配置的 API 端点，然后将返回的文本粘贴回当前焦点（模拟 Ctrl+V）。适用于需要通过快捷键快速调用远程/本地 LLM 处理选中文本的场景。
+一个文本处理的系统增强层，以 Client 模式运行在后台，为系统提供基于 LLM 的文本处理增强支持。支持配置任意多组快捷键，每组快捷键对应一个提示词处理操作。通过快捷键获取当前选中文本、发送至 API 处理、并以剪贴板作为中转将结果粘贴回原位。提供两套快捷键系统：系统注册热键（RegisterHotKey）与底层键盘钩子（WH_KEYBOARD_LL）。
 
 主要用途示例：
 
@@ -30,7 +30,7 @@
 
 ## 先决条件
 
-- 操作系统：Windows
+- 操作系统：Windows（目前仅适配 Windows，理论上只需更改剪贴板相关部分即可兼容 macOS / Linux，有兴趣可自行修改）
 
 ## 构建
 
@@ -77,32 +77,36 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stp.exe
 
 程序默认会在当前目录寻找 `config.json`。如果没有找到并且没有通过命令行传入任何覆盖参数，程序会生成一个默认 `config.json` 并退出，提示用户编辑。
 
-主要字段（示例/说明）：
+主要配置字段：
 
-- APIEndpoint (string) — ASR/LLM 上传端点 URL（必填）
-- Token (string) — 授权 token（Bearer）
-- Model (string) — 可选，传给 API 的模型字段
-- Temperature (float) — 温度，默认 0.0
-- Max_Tokens (int) — 最大 tokens（可选）
-- TEXTPath (string) — 从返回 JSON 中抽取文本的路径，点分并支持索引（默认 "choices[0].message.content"）
-- ExtraConfig (string) — JSON 字符串，会解析为根级字段并合并到请求 body 中（全局）
-- RequestTimeout (int) — 请求超时（秒，默认 30）
-- MaxRetry (int) — 重试次数（默认 3）
-- RetryBaseDelay (float) — 重试基准延迟（秒，默认 0.5）
-- EnableHTTP2 (bool) — 是否启用 HTTP/2（默认 true）
-- VerifySSL (bool) — 是否验证 SSL（默认 true）
-- ClipboardTimeout (int) — 剪贴板超时时间（ms，默认 1000）
-- RequestFailedNotification (bool) — 请求失败或提取为空时，是否粘贴占位符（默认 false）
-- StopTaskHotkey (string) — 取消当前请求并清空等待队列的全局热键（默认空字符串，不启用）
-- HotKeyConfig ([]HotKeyEntry) — 热键配置数组，每项包含 Prompt、HotKey 与 ExtraConfig
-- HotKeyHook (bool) — 是否使用低级键盘钩子（WH_KEYBOARD_LL）
-- DEBUG (bool) — 启用详细日志输出
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| APIEndpoint | string | — | LLM API 端点 URL（必填） |
+| Token | string | — | 授权 token（Bearer） |
+| Model | string | — | 模型名称（可选） |
+| Temperature | float | `0.0` | 温度 |
+| Max_Tokens | int | — | 最大 tokens（可选） |
+| TEXTPath | string | `"choices[0].message.content"` | 从返回 JSON 中抽取文本的路径，点分并支持索引 |
+| ExtraConfig | string | — | 字符串化 JSON，解析为根级字段并合并到请求 body（全局） |
+| RequestTimeout | int | `30` | 请求超时（秒） |
+| MaxRetry | int | `3` | 最大重试次数 |
+| RetryBaseDelay | float | `0.5` | 重试基准延迟（秒） |
+| EnableHTTP2 | bool | `true` | 是否启用 HTTP/2 |
+| VerifySSL | bool | `true` | 是否验证 SSL |
+| ClipboardTimeout | int | `1000` | 剪贴板超时时间（ms） |
+| RequestFailedNotification | bool | `false` | 请求失败或提取为空时粘贴占位符 |
+| StopTaskHotkey | string | `""` | 取消当前请求并清空等待队列的全局热键（空则不启用） |
+| HotKeyConfig | []HotKeyEntry | — | 热键配置数组，每项包含 Prompt、HotKey 与 ExtraConfig |
+| HotKeyHook | bool | `false` | 是否使用低级键盘钩子（WH_KEYBOARD_LL） |
+| DEBUG | bool | `false` | 启用详细日志输出 |
 
 HotKeyEntry 结构：
 
-- Prompt (string) — 要与选中文本一起发送给 API 的提示词
-- HotKey (string) — 热键字符串，例如 "ctrl+f1"、"alt+q"、"ctrl+numpad1"
-- ExtraConfig (string) — JSON 字符串，解析后合并到请求中（优先级高于全局 ExtraConfig）
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| Prompt | string | 要与选中文本一起发送给 API 的提示词 |
+| HotKey | string | 热键字符串，例如 `"ctrl+f1"`、`"alt+q"`、`"ctrl+numpad1"` |
+| ExtraConfig | string | JSON 字符串，解析后合并到请求中（优先级高于全局 ExtraConfig） |
 
 示例：
 
@@ -142,27 +146,29 @@ HotKeyEntry 结构：
 
 ## 命令行参数
 
-命令行优先级高于配置文件。常用参数：
+命令行参数优先级高于配置文件，会覆盖配置文件中的对应设置。
 
-- -config <path>          指定配置文件路径
-- -api-endpoint <string>
-- -token <string>
-- -model <string>
-- -temperature <float>
-- -max-tokens <int>
-- -text-path <string>
-- -extra-config <json-string>
-- -request-timeout <int>
-- -max-retry <int>
-- -retry-base-delay <float>
-- -enable-http2 <true|false>
-- -verify-ssl <true|false>
-- -clipboard-timeout <int>
-- -request-failed-notification <true|false>
-- -stop-task-hotkey <string>
-- -hotkeyhook <true|false>
-- -debug <true|false>
-- -h                     帮助
+| 参数 | 说明 |
+|------|------|
+| `-config <path>` | 指定配置文件路径 |
+| `-api-endpoint <string>` | LLM API 端点 URL |
+| `-token <string>` | 授权 token |
+| `-model <string>` | 模型名称 |
+| `-temperature <float>` | 温度 |
+| `-max-tokens <int>` | 最大 tokens |
+| `-text-path <string>` | 自定义从返回 JSON 中抽取文本的路径 |
+| `-extra-config <json-string>` | 额外 JSON 字符串，解析并合并到请求 payload（优先级高） |
+| `-request-timeout <int>` | 请求超时 |
+| `-max-retry <int>` | 最大重试次数 |
+| `-retry-base-delay <float>` | 重试基准延迟 |
+| `-enable-http2 <true\|false>` | 是否启用 HTTP/2 |
+| `-verify-ssl <true\|false>` | 是否验证 SSL |
+| `-clipboard-timeout <int>` | 剪贴板超时时间（ms） |
+| `-request-failed-notification <true\|false>` | 请求失败时粘贴占位符 |
+| `-stop-task-hotkey <string>` | 取消当前请求并清空队列的热键 |
+| `-hotkeyhook <true\|false>` | 使用低级键盘钩子 |
+| `-debug <true\|false>` | 启用详细日志 |
+| `-h` | 帮助 |
 
 程序会在启动时根据配置构建要注册的热键表。若没有有效的配置项（例如所有 Prompt 或 HotKey 都为空），程序会打印提示并退出。
 
@@ -182,10 +188,10 @@ stp.exe -config config.json
 
 3. 在目标应用（文本编辑器、浏览器输入框等）选中要处理的文本，按配置的热键（例如 Ctrl+1）。程序会自动复制、发送请求、并粘贴返回结果到当前焦点处；若仍然选中文本则会直接替换；若对结果不满意可使用Ctrl+Z撤回操作。
 4. 在控制台会输出调试信息（若启用 DEBUG）或错误提示。
-5. 正常使用建议注册为服务或使用vbs/powershell后台任务无窗口方式启动。
+5. 正常使用建议使用vbs/powershell后台任务无窗口方式启动。
 
 ```powershell
-Start-Process -FilePath stp -ArgumentList '-config', 'C:\Users\xxx\stp-config.json' -WindowStyle Hidden
+Start-Process -FilePath stp -ArgumentList '-config', 'C:\xxx\xxx\stp-config.json' -WindowStyle Hidden
 ```
 
 ```vbs
@@ -197,10 +203,10 @@ For Each objProcess in colProcessList
 Next
 
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run "stp -config C:\Users\xxx\stp-config.json", 0
+objShell.Run "stp -config C:\xxx\xxx\stp-config.json", 0
 ```
 
-## TEXTPath 与 ExtraConfig 说明
+## 自定义解析路径与扩展字段
 
 - TEXTPath：用于从 API 返回的 JSON 中定位最终文本，支持点分与数组索引，例如 "results[0].alternatives[0].transcript" 或 "choices[0].message.content"。
 - ExtraConfig：接受一个 JSON 字符串（需转义），解析后合并到请求 body 的根级字段.
@@ -228,5 +234,5 @@ RequestFailedNotification 行为：
 
 ## 安全注意
 
-- 若将 VERIFY_SSL 设为 false，会跳过 HTTPS 证书验证 —— 这在不受信任网络下存在安全风险，请谨慎使用。
+- 若将 VERIFY_SSL 设为 false，会跳过 HTTPS 证书验证 —— 在不受信任网络下存在安全风险，请谨慎使用。
 - 日志或请求中可能包含敏感信息（例如 Token 或返回文本），请妥善保管并避免在不受信环境中启用详细日志。
