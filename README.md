@@ -242,3 +242,10 @@ RequestFailedNotification 行为：
 
 - 若将 VERIFY_SSL 设为 false，会跳过 HTTPS 证书验证 —— 在不受信任网络下存在安全风险，请谨慎使用。
 - 日志或请求中可能包含敏感信息（例如 Token 或返回文本），请妥善保管并避免在不受信环境中启用详细日志。
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 or later.
+See [LICENSE](LICENSE) for details. Third-party dependency notices and complete
+license texts are available in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
+and [`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/).

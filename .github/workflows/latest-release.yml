@@ -33,6 +33,15 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Check third-party notices
+        run: |
+          test -s NOTICE
+          test -s THIRD_PARTY_NOTICES.txt
+          grep -qi 'clipboard' THIRD_PARTY_NOTICES.txt
+          grep -qi 'keybd_event' THIRD_PARTY_NOTICES.txt
+          test -s THIRD_PARTY_LICENSES/clipboard-BSD-3-Clause.txt
+          test -s THIRD_PARTY_LICENSES/keybd_event-MIT.txt
+
       - name: Build Windows binary
         env:
           CGO_ENABLED: "0"
@@ -41,12 +50,13 @@ jobs:
         run: |
           mkdir -p dist/package
           go build -trimpath -ldflags="-s -w" -o dist/package/stp.exe ./cmd/stp
-          cp README.md LICENSE dist/package/
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/package/
+          cp -R THIRD_PARTY_LICENSES dist/package/
 
       - name: Package
         run: |
           cd dist/package
-          python3 -m zipfile -c ../stp-windows-amd64.zip stp.exe README.md LICENSE
+          python3 -m zipfile -c ../stp-windows-amd64.zip stp.exe README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt THIRD_PARTY_LICENSES/*
           cd ../..
           sha256sum dist/stp-windows-amd64.zip > dist/stp-windows-amd64.zip.sha256
 

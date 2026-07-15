@@ -1,0 +1,22 @@
+# Third-Party Notices
+
+The Windows binary statically links the following Go modules. Release packages
+include their complete license texts in `THIRD_PARTY_LICENSES/`.
+
+## clipboard
+
+- Version: v0.1.4
+- Source: https://github.com/atotto/clipboard
+- License: BSD-3-Clause
+- Full license text: `THIRD_PARTY_LICENSES/clipboard-BSD-3-Clause.txt`
+
+## keybd_event
+
+- Version: v1.1.2
+- Source: https://github.com/micmonay/keybd_event
+- License: MIT
+- Full license text: `THIRD_PARTY_LICENSES/keybd_event-MIT.txt`
+
+## Project License
+
+- GPL-3.0-or-later
