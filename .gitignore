@@ -4,11 +4,12 @@ config.json
 .env
 .env.*
 
-# Go build output
+# Build output
 bin/
 build/
 dist/
 out/
+target/
 *.exe
 *.dll
 *.so
@@ -16,11 +17,6 @@ out/
 *.test
 *.out
 coverage.*
-
-# Go workspace and dependency scratch files
-go.work
-go.work.sum
-vendor/
 
 # Logs and temporary files
 *.log

@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build Windows Release
+  test-and-build:
+    name: Test and build Windows release
     runs-on: ubuntu-latest
 
     steps:
@@ -24,39 +24,77 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
-          cache: true
+          components: clippy,rustfmt
+          targets: x86_64-pc-windows-gnu
 
-      - name: Test
-        run: go test ./...
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
 
-      - name: Check third-party notices
+      - name: Install Windows GNU linker
+        run: sudo apt-get update && sudo apt-get install --yes mingw-w64
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Lint Rust Windows target
+        run: cargo clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+
+      - name: Test Rust
+        run: cargo test --locked --all-targets
+
+      - name: Cross-check Windows target
+        run: cargo check --locked --target x86_64-pc-windows-gnu --all-targets
+
+      - name: Build Windows binary
+        run: |
+          cargo build --locked --release --target x86_64-pc-windows-gnu --bin stp
+          mkdir -p dist/package
+          cp target/x86_64-pc-windows-gnu/release/stp.exe dist/package/
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version 0.9.1
+
+      - name: Generate Rust dependency licenses
+        run: |
+          mkdir -p THIRD_PARTY_LICENSES
+          cargo about generate --locked --target x86_64-pc-windows-gnu about.hbs -o THIRD_PARTY_LICENSES/RUST-DEPENDENCIES.html
+
+      - name: Check constraints and third-party notices
         run: |
           test -s NOTICE
           test -s THIRD_PARTY_NOTICES.txt
-          grep -qi 'clipboard' THIRD_PARTY_NOTICES.txt
-          grep -qi 'keybd_event' THIRD_PARTY_NOTICES.txt
-          test -s THIRD_PARTY_LICENSES/clipboard-BSD-3-Clause.txt
+          test -s docs/rust-rewrite-contract.md
           test -s THIRD_PARTY_LICENSES/keybd_event-MIT.txt
+          test -s THIRD_PARTY_LICENSES/RUST-DEPENDENCIES.html
+          if rg --hidden --glob '!docs/rust-rewrite-contract.md' --glob '!target/**' --glob '!*.md' 'SendInput' src tests Cargo.toml; then
+            echo 'SendInput is forbidden in the implementation'
+            exit 1
+          fi
 
-      - name: Build Windows binary
-        env:
-          CGO_ENABLED: "0"
-          GOOS: windows
-          GOARCH: amd64
+      - name: Check Windows runtime dependencies
         run: |
-          mkdir -p dist/package
-          go build -trimpath -ldflags="-s -w" -o dist/package/stp.exe ./cmd/stp
-          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/package/
+          imports="$(x86_64-w64-mingw32-objdump -p dist/package/stp.exe | sed -n 's/.*DLL Name: //p' | tr '[:upper:]' '[:lower:]' | sort -u)"
+          echo "$imports"
+          if echo "$imports" | rg -i 'libgcc|libstdc\+\+|libwinpthread'; then
+            echo 'Unexpected MinGW runtime DLL dependency'
+            exit 1
+          fi
+
+      - name: Assemble package
+        run: |
+          cp README.md README_ZH.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/package/
           cp -R THIRD_PARTY_LICENSES dist/package/
 
       - name: Package
         run: |
           cd dist/package
-          python3 -m zipfile -c ../stp-windows-amd64.zip stp.exe README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt THIRD_PARTY_LICENSES/*
+          zip -qr ../stp-windows-amd64.zip .
           cd ../..
           sha256sum dist/stp-windows-amd64.zip > dist/stp-windows-amd64.zip.sha256
 
@@ -71,12 +109,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Automated build from ${GITHUB_REF_NAME} at ${GITHUB_SHA}."
-          if gh release view Latest >/dev/null 2>&1; then
+          notes="Automated Windows amd64 build from ${GITHUB_REF_NAME} at ${GITHUB_SHA}."
+          if gh release view Latest; then
             gh release edit Latest --title "Latest" --notes "$notes"
           else
             gh release create Latest --title "Latest" --notes "$notes"
           fi
+          for asset in \
+            stp-windows-amd64-go.zip \
+            stp-windows-amd64-go.zip.sha256 \
+            stp-windows-amd64-rust.zip \
+            stp-windows-amd64-rust.zip.sha256; do
+            if gh release view Latest --json assets --jq '.assets[].name' | rg -Fx "$asset"; then
+              gh release delete-asset Latest "$asset" --yes
+            fi
+          done
           gh release upload Latest \
             dist/stp-windows-amd64.zip \
             dist/stp-windows-amd64.zip.sha256 \

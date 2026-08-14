@@ -1,0 +1,16 @@
+{
+  "messages": [
+    {
+      "content": "translate",
+      "role": "developer"
+    },
+    {
+      "content": "hello",
+      "role": "user"
+    }
+  ],
+  "new_field": false,
+  "temperature": 0.0,
+  "zero": 0
+}
+

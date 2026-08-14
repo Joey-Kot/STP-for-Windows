@@ -1,0 +1,73 @@
+{
+  "APIEndpoint": "",
+  "Token": "",
+  "Model": "",
+  "Temperature": 0.0,
+  "Max_Tokens": 0,
+  "TEXTPath": "choices[0].message.content",
+  "ExtraConfig": "",
+  "RequestTimeout": 30,
+  "MaxRetry": 3,
+  "RetryBaseDelay": 0.5,
+  "EnableHTTP2": true,
+  "VerifySSL": true,
+  "ClipboardTimeout": 1000,
+  "ClipboardWriteDelay": 80,
+  "ClipboardRestoreDelay": 120,
+  "RequestFailedNotification": false,
+  "StopTaskHotkey": "",
+  "HotKeyConfig": [
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f1",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f2",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f3",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f4",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f5",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f6",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f7",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "ctrl+f8",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "",
+      "ExtraConfig": ""
+    },
+    {
+      "Prompt": "",
+      "HotKey": "",
+      "ExtraConfig": ""
+    }
+  ],
+  "HotKeyHook": false,
+  "DEBUG": false
+}

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>STP-for-Windows Rust dependency licenses</title>
+  <style>
+    body { font-family: sans-serif; max-width: 72rem; margin: 2rem auto; padding: 0 1rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    article { border-top: 1px solid #ccc; margin-top: 2rem; padding-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>STP-for-Windows Rust dependency licenses</h1>
+  {{#each licenses}}
+  <article>
+    <h2>{{name}} — {{id}}</h2>
+    {{#each used_by}}
+    <p><strong>{{crate.name}} {{crate.version}}</strong>{{#if crate.repository}} — <a href="{{crate.repository}}">source</a>{{/if}}</p>
+    {{/each}}
+    <pre>{{text}}</pre>
+  </article>
+  {{/each}}
+</body>
+</html>
+
