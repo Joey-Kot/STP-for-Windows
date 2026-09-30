@@ -18,11 +18,14 @@ use crate::request::{
     parse_extra_config,
 };
 use crate::response::extract_text_from_response;
+use crate::text_input::{Output, TextOutput};
 
 pub const TASK_QUEUE_CAPACITY: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error(transparent)]
+    InvalidConfig(#[from] crate::config::ConfigError),
     #[error("invalid ExtraConfig JSON: {0}")]
     InvalidGlobalExtra(#[from] crate::request::ExtraConfigError),
     #[error("application has already been started")]
@@ -41,6 +44,8 @@ pub struct App {
     config: Config,
     network: Arc<dyn NetworkClient>,
     text_io: Arc<dyn TextIo>,
+    text_output: Arc<dyn TextOutput>,
+    text_paths: Vec<serde_json_path::JsonPath>,
     global_extra: Option<ExtraConfig>,
     state: Mutex<State>,
     notify: Notify,
@@ -54,11 +59,24 @@ impl App {
         network: Arc<dyn NetworkClient>,
         text_io: Arc<dyn TextIo>,
     ) -> Result<Arc<Self>, AppError> {
+        let text_output = Arc::new(Output::new(Arc::clone(&text_io), config.UseSendInput));
+        Self::with_output(config, network, text_io, text_output)
+    }
+
+    pub fn with_output(
+        config: Config,
+        network: Arc<dyn NetworkClient>,
+        text_io: Arc<dyn TextIo>,
+        text_output: Arc<dyn TextOutput>,
+    ) -> Result<Arc<Self>, AppError> {
+        let text_paths = config.compile_text_paths()?;
         let global_extra = parse_extra_config(&config.ExtraConfig)?;
         Ok(Arc::new(Self {
             config,
             network,
             text_io,
+            text_output,
+            text_paths,
             global_extra,
             state: Mutex::new(State {
                 queue: VecDeque::with_capacity(TASK_QUEUE_CAPACITY),
@@ -136,18 +154,23 @@ impl App {
                 if state.closed {
                     return;
                 }
-                state.queue.pop_front()
+                state.queue.pop_front().map(|id| {
+                    let cancellation = CancellationToken::new();
+                    state.current_cancellation = Some(cancellation.clone());
+                    (id, cancellation)
+                })
             };
-            if let Some(id) = task {
-                self.handle_task(id).await;
+            if let Some((id, cancellation)) = task {
+                self.handle_task(id, &cancellation).await;
+                self.clear_current(&cancellation);
             } else {
                 notified.await;
             }
         }
     }
 
-    async fn handle_task(&self, id: i32) {
-        if id < 1 {
+    async fn handle_task(&self, id: i32, cancellation: &CancellationToken) {
+        if id < 1 || cancellation.is_cancelled() {
             return;
         }
         let Some(entry) = self.config.HotKeyConfig.get((id - 1) as usize) else {
@@ -168,6 +191,9 @@ impl App {
                 return;
             }
         };
+        if cancellation.is_cancelled() {
+            return;
+        }
 
         let per_entry_extra = match parse_extra_config(&entry.ExtraConfig) {
             Ok(value) => value,
@@ -198,11 +224,6 @@ impl App {
         } else {
             runtime_overrides.token.trim()
         };
-        let cancellation = CancellationToken::new();
-        {
-            let mut state = self.state.lock().expect("app state poisoned");
-            state.current_cancellation = Some(cancellation.clone());
-        }
         let response = self
             .network
             .send_with_retry(
@@ -217,29 +238,37 @@ impl App {
                 },
             )
             .await;
-        self.clear_current(&cancellation);
+        if cancellation.is_cancelled() {
+            return;
+        }
 
         let body = match response {
             Ok(body) => body,
+            Err(crate::netclient::NetError::Cancelled) => return,
             Err(error) => {
                 if self.config.DEBUG {
                     eprintln!("[request] failed: {error}");
                 }
-                self.notify_placeholder("[request failed]").await;
+                self.notify_placeholder("[request failed]", cancellation)
+                    .await;
                 return;
             }
         };
-        let extracted =
-            extract_text_from_response(&body, &runtime_overrides.text_path, &self.config.TEXTPath);
-        if extracted.trim().is_empty() {
-            self.notify_placeholder("[empty result]").await;
+        let extracted = match extract_text_from_response(&body, &self.text_paths[(id - 1) as usize])
+        {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("[response] failed: {error}");
+                if self.config.DEBUG {
+                    eprintln!("[response] raw: {}", String::from_utf8_lossy(&body));
+                }
+                return;
+            }
+        };
+        if extracted.is_empty() {
             return;
         }
-        if let Err(error) = self.paste_text(extracted).await
-            && self.config.DEBUG
-        {
-            eprintln!("[paste] failed: {error}");
-        }
+        self.input_text(&extracted, cancellation).await;
     }
 
     fn clear_current(&self, expected: &CancellationToken) {
@@ -261,17 +290,17 @@ impl App {
             .map_err(|error| error.to_string())
     }
 
-    async fn paste_text(&self, text: String) -> Result<(), String> {
-        let text_io = Arc::clone(&self.text_io);
-        tokio::task::spawn_blocking(move || text_io.paste_text(&text))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())
+    async fn input_text(&self, text: &str, cancellation: &CancellationToken) {
+        if let Err(error) = self.text_output.send_text(text, cancellation).await
+            && !error.canceled_before_output()
+        {
+            eprintln!("[input] {}: {error}", error.status());
+        }
     }
 
-    async fn notify_placeholder(&self, text: &str) {
+    async fn notify_placeholder(&self, text: &str, cancellation: &CancellationToken) {
         if self.config.RequestFailedNotification {
-            let _ = self.paste_text(text.to_owned()).await;
+            self.input_text(text, cancellation).await;
         }
     }
 }

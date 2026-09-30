@@ -39,6 +39,7 @@ pub struct Config {
     pub ClipboardTimeout: i64,
     pub ClipboardWriteDelay: i64,
     pub ClipboardRestoreDelay: i64,
+    pub UseSendInput: bool,
     pub RequestFailedNotification: bool,
     pub StopTaskHotkey: String,
     pub HotKeyConfig: Vec<HotKeyEntry>,
@@ -116,6 +117,7 @@ struct RawConfig {
     ClipboardTimeout: Option<i64>,
     ClipboardWriteDelay: Option<i64>,
     ClipboardRestoreDelay: Option<i64>,
+    UseSendInput: Option<bool>,
     RequestFailedNotification: Option<bool>,
     StopTaskHotkey: Option<String>,
     #[serde(default)]
@@ -175,6 +177,9 @@ impl From<Option<RawConfig>> for Config {
         if let Some(value) = raw.ClipboardRestoreDelay {
             config.ClipboardRestoreDelay = value;
         }
+        if let Some(value) = raw.UseSendInput {
+            config.UseSendInput = value;
+        }
         if let Some(value) = raw.RequestFailedNotification {
             config.RequestFailedNotification = value;
         }
@@ -226,7 +231,7 @@ impl Default for Config {
             Model: String::new(),
             Temperature: 0.0,
             MaxTokens: 0,
-            TEXTPath: "choices[0].message.content".to_owned(),
+            TEXTPath: "$.choices[0].message.content".to_owned(),
             ExtraConfig: String::new(),
             RequestTimeout: 30,
             MaxRetry: 3,
@@ -236,6 +241,7 @@ impl Default for Config {
             ClipboardTimeout: 1000,
             ClipboardWriteDelay: 80,
             ClipboardRestoreDelay: 120,
+            UseSendInput: false,
             RequestFailedNotification: false,
             StopTaskHotkey: String::new(),
             HotKeyConfig: hotkeys,
@@ -247,6 +253,12 @@ impl Default for Config {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error("{field}: {source}")]
+    InvalidTextPath {
+        field: String,
+        #[source]
+        source: crate::response::TextPathError,
+    },
     #[error("failed to read config '{path}': {source}")]
     Read {
         path: PathBuf,
@@ -275,6 +287,42 @@ pub enum ConfigError {
     },
 }
 
+impl Config {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.compile_text_paths().map(|_| ())
+    }
+
+    pub(crate) fn compile_text_paths(&self) -> Result<Vec<serde_json_path::JsonPath>, ConfigError> {
+        let default = crate::response::parse_text_path(self.TEXTPath.trim()).map_err(|source| {
+            ConfigError::InvalidTextPath {
+                field: "TEXTPath".into(),
+                source,
+            }
+        })?;
+        self.HotKeyConfig
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                // Malformed entry JSON is still ignored by the request layer.
+                let extra = crate::request::parse_extra_config(&entry.ExtraConfig)
+                    .ok()
+                    .flatten();
+                let (overrides, _) = crate::request::extract_runtime_overrides(extra);
+                if overrides.text_path.is_empty() {
+                    Ok(default.clone())
+                } else {
+                    crate::response::parse_text_path(&overrides.text_path).map_err(|source| {
+                        ConfigError::InvalidTextPath {
+                            field: format!("HotKeyConfig[{index}].ExtraConfig.TEXTPath"),
+                            source,
+                        }
+                    })
+                }
+            })
+            .collect()
+    }
+}
+
 pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let path = path.as_ref();
     let data = fs::read(path).map_err(|source| ConfigError::Read {
@@ -301,7 +349,7 @@ pub fn save_default(path: impl AsRef<Path>) -> Result<(), ConfigError> {
 #[command(
     name = "stp.exe",
     version,
-    about = "Process selected text through an LLM API and paste the result.",
+    about = "Process selected text through an LLM API and input the result.",
     long_about = None
 )]
 pub struct Cli {
@@ -339,7 +387,7 @@ pub struct Cli {
     /// Maximum token request field; omitted when not positive
     #[arg(long, value_name = "N", help_heading = "API")]
     pub max_tokens: Option<i64>,
-    /// Dot path used to extract text from the JSON response
+    /// Standard JSONPath selecting exactly one string, number or boolean
     #[arg(
         long,
         value_name = "PATH",
@@ -408,7 +456,16 @@ pub struct Cli {
     /// Milliseconds to wait after Ctrl+V before restoring the original clipboard text
     #[arg(long, value_name = "MS", help_heading = "Hotkeys")]
     pub clipboard_restore_delay: Option<i64>,
-    /// Paste failure or empty-result placeholders when enabled
+    /// Input Unicode text with SendInput instead of pasting through the clipboard
+    #[arg(
+        long,
+        value_name = "BOOL",
+        help_heading = "Output",
+        value_parser = BoolishValueParser::new(),
+        num_args = 1
+    )]
+    pub use_sendinput: Option<bool>,
+    /// Input a request-failure placeholder when enabled
     #[arg(
         long,
         value_name = "BOOL",
@@ -453,6 +510,7 @@ impl Cli {
             || self.clipboard_timeout.is_some()
             || self.clipboard_write_delay.is_some()
             || self.clipboard_restore_delay.is_some()
+            || self.use_sendinput.is_some()
             || self.request_failed_notification.is_some()
             || self.stop_task_hotkey.is_some()
             || self.hotkey_hook.is_some()
@@ -504,6 +562,9 @@ impl Cli {
         }
         if let Some(value) = self.clipboard_restore_delay {
             config.ClipboardRestoreDelay = value;
+        }
+        if let Some(value) = self.use_sendinput {
+            config.UseSendInput = value;
         }
         if let Some(value) = self.request_failed_notification {
             config.RequestFailedNotification = value;

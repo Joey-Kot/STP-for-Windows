@@ -163,3 +163,37 @@ fn copy_continues_after_five_clear_failures_and_still_restores() {
     assert_eq!(clipboard.writes(), vec!["", "", "", "", "", "original"]);
     assert_eq!(*keyboard.copy_calls.lock().unwrap(), 1);
 }
+
+#[test]
+fn restore_failure_reports_that_paste_was_already_sent() {
+    struct RestoreFailure;
+    impl Clipboard for RestoreFailure {
+        fn read_all(&self) -> Result<String, ClipboardError> {
+            Ok("original".into())
+        }
+        fn write_all(&self, text: &str) -> Result<(), ClipboardError> {
+            if text == "original" {
+                Err(ClipboardError::Platform("restore failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let keyboard = Arc::new(FakeKeyboard::default());
+    let manager = Manager::with_sleeper(
+        Arc::new(RestoreFailure),
+        keyboard.clone(),
+        Arc::new(FakeSleeper::default()),
+        Duration::from_secs(1),
+        DEFAULT_WRITE_DELAY,
+        DEFAULT_RESTORE_DELAY,
+    );
+    assert!(matches!(
+        manager.paste_text("result"),
+        Err(stp::clipboard::TextIoError::RestoreFailed {
+            paste_sent: true,
+            ..
+        })
+    ));
+    assert_eq!(*keyboard.paste_calls.lock().unwrap(), 1);
+}

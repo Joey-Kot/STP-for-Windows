@@ -2,7 +2,7 @@ English | [简体中文](README_ZH.md)
 
 # STP for Windows
 
-STP for Windows is a background selected-text processing client for Windows x86_64. It turns configurable global hotkeys into LLM-powered text actions: select text in any application, press a hotkey, and STP copies the selection, sends it to a compatible JSON HTTP API together with the configured prompt, extracts the result, pastes it back, and then attempts to restore the original clipboard text.
+STP for Windows is a background selected-text processing client for Windows x86_64. It turns configurable global hotkeys into LLM-powered text actions: select text in any application, press a hotkey, and STP copies the selection, sends it to a compatible JSON HTTP API together with the configured prompt, extracts exactly one result using JSONPath, and inputs it through clipboard paste or optional Unicode SendInput. Clipboard operations attempt to restore the original clipboard text.
 
 stp.exe: a portable command-line background process using native Win32 hotkeys, clipboard APIs, and keyboard events.
 
@@ -22,13 +22,14 @@ stp.exe: a portable command-line background process using native Win32 hotkeys, 
   - Entry-level `ExtraConfig` takes precedence over global `ExtraConfig` and built-in request fields.
 - **Serial task queue and cancellation**
   - Processes tasks through a single worker in trigger order, with a queue capacity of 64.
-  - An optional stop hotkey cancels the active HTTP request or retry wait and clears queued tasks without exiting STP.
+  - An optional stop hotkey cancels the active HTTP request, retry wait, or SendInput output and clears queued tasks without exiting STP.
 - **Clipboard-preserving replacement**
   - Saves the original Unicode clipboard text, sends `Ctrl+C` and `Ctrl+V` through Win32 `keybd_event`, and attempts to restore the saved text after each operation.
   - Clipboard copy timeout and paste timing can be adjusted for slower applications.
+  - Optional `UseSendInput` sends Unicode text without using the clipboard for output. Copying the selection still uses the clipboard.
 - **Network controls and diagnostics**
   - Supports per-attempt timeout, exponential-backoff retries, HTTP/2 negotiation, TLS verification control, and debug logging.
-  - Can paste `[request failed]` or `[empty result]` when placeholder output is enabled.
+  - Can input `[request failed]` after request failure. Extraction errors and empty strings produce no output.
 
 ## Download
 
@@ -49,7 +50,7 @@ flowchart LR
         Build["Prompt + selected text<br/>JSON request builder"]
         HTTP["HTTP client<br/>timeout + retry + cancellation"]
         Extract["JSON response<br/>TEXTPath extraction"]
-        Paste["Write result + Ctrl+V<br/>restore clipboard"]
+        Paste["Clipboard paste or Unicode SendInput"]
     end
 
     Config["config.json<br/>global and per-action settings"]
@@ -64,7 +65,7 @@ flowchart LR
     Config --> Build
     Config --> HTTP
     Config --> Paste
-    Stop -->|"cancel active HTTP work<br/>and clear queued tasks"| Queue
+    Stop -->|"cancel active task<br/>and clear queued tasks"| Queue
 ```
 
 ## Processing flow
@@ -90,20 +91,28 @@ sequenceDiagram
     alt Stop hotkey during HTTP or retry wait
         User->>STP: Stop task
         STP-->>API: Cancel active request
-        STP->>STP: Clear queued tasks
-        opt RequestFailedNotification is enabled
-            STP->>Target: Paste [request failed]
-        end
+        STP->>STP: Clear queued tasks, no output
     else Successful 2xx response
         API-->>STP: JSON response
-        STP->>STP: Extract text through TEXTPath
-        STP->>Clipboard: Save original text and write result
-        STP->>STP: Wait ClipboardWriteDelay
-        STP->>Target: Send Ctrl+V through keybd_event
-        STP->>STP: Wait ClipboardRestoreDelay
-        STP->>Clipboard: Restore original text
-    else Final request failure or empty result
-        STP->>Target: Optionally paste a placeholder
+        STP->>STP: Query TEXTPath, require exactly one scalar
+        alt Invalid JSON, match count, or value type
+            STP->>STP: Report extraction error, no retry or output
+        else Empty string
+            STP->>STP: Complete without output
+        else Non-empty text
+            alt UseSendInput
+                STP->>STP: Wait for modifier release, check cancellation
+                STP->>Target: Send UTF-16 batches, stop on error or cancellation
+            else Clipboard output
+                STP->>Clipboard: Save original text and write result
+                STP->>STP: Wait ClipboardWriteDelay
+                STP->>Target: Send Ctrl+V through keybd_event
+                STP->>STP: Wait ClipboardRestoreDelay
+                STP->>Clipboard: Restore original text
+            end
+        end
+    else Final request failure
+        STP->>Target: Optionally input placeholder through selected channel
     end
 ```
 
@@ -112,15 +121,15 @@ STP does not run requests in parallel. Hotkey tasks are processed one at a time 
 ## Capabilities and current limitations
 
 - Official releases target Windows x86_64. Clipboard access, keyboard injection, and global hotkeys are Windows-only even though non-Windows builds can compile for testing.
-- STP is a console background process. It does not provide a GUI, tray icon, Windows Toast notification, or per-character typing mode.
-- The target application must support ordinary `Ctrl+C` and `Ctrl+V` operations and expose copied text through `CF_UNICODETEXT`.
+- STP is a console background process. It does not provide a GUI, tray icon, or Windows Toast notification.
+- The target application must support `Ctrl+C` and expose copied text through `CF_UNICODETEXT`. Output requires `Ctrl+V` support or Unicode SendInput support for the selected channel.
 - Only the Unicode text clipboard format is backed up and restored. Images, file lists, rich text, HTML, and other clipboard formats are not preserved.
 - The selected text and configured prompt are sent to the API only after the hotkey task reaches the worker. There is no local model or offline processing backend.
 - The endpoint must accept JSON and return JSON. Non-JSON responses cannot be extracted.
-- Changing the foreground window while a task is running changes where the final `Ctrl+V` is delivered.
-- The stop hotkey cancels HTTP requests and retry waits. It does not interrupt a clipboard copy or paste already running.
+- Changing the foreground window while a task is running changes where the output is delivered.
+- The stop hotkey cancels HTTP requests, retry waits, and SendInput waits or remaining batches. It does not interrupt a clipboard copy or paste already running.
 - Holding a registered hotkey may generate repeated task events. Burst events can be dropped when the hotkey event channel or task queue is full.
-- `RequestFailedNotification` is not a Windows notification switch; it controls placeholder text pasted into the foreground application.
+- `RequestFailedNotification` is not a Windows notification switch; it controls request-failure text output through the selected channel.
 
 ## Requirements
 
@@ -155,7 +164,7 @@ STP does not run requests in parallel. Hotkey tasks are processed one at a time 
   "APIEndpoint": "https://api.example.com/v1/chat/completions",
   "Token": "sk-xxx",
   "Model": "your-model",
-  "TEXTPath": "choices[0].message.content",
+  "TEXTPath": "$.choices[0].message.content",
   "RequestTimeout": 30,
   "MaxRetry": 3,
   "RetryBaseDelay": 0.5,
@@ -164,6 +173,7 @@ STP does not run requests in parallel. Hotkey tasks are processed one at a time 
   "ClipboardTimeout": 1000,
   "ClipboardWriteDelay": 80,
   "ClipboardRestoreDelay": 120,
+  "UseSendInput": false,
   "RequestFailedNotification": true,
   "StopTaskHotkey": "alt+f12",
   "HotKeyConfig": [
@@ -226,7 +236,7 @@ Command-line overrides > JSON selected by --config > config.json in the current 
 | `Model` | string | `""` | Adds the root `model` request field when non-empty |
 | `Temperature` | number | `0.0` | Adds the root `temperature` field before `ExtraConfig` is merged |
 | `Max_Tokens` | integer | `0` | Adds `max_tokens` only when greater than zero |
-| `TEXTPath` | string | `"choices[0].message.content"` | Default dot path used to extract the result from the response JSON |
+| `TEXTPath` | string | `"$.choices[0].message.content"` | Standard JSONPath selecting exactly one string, number, or boolean from the response |
 | `ExtraConfig` | string | `""` | Stringified JSON object merged into every request payload |
 
 ### Network fields
@@ -246,8 +256,9 @@ Command-line overrides > JSON selected by --config > config.json in the current 
 | `ClipboardTimeout` | integer | `1000` | Maximum milliseconds to wait for non-empty copied selection text; negative values become zero |
 | `ClipboardWriteDelay` | integer | `80` | Milliseconds to wait after writing processed text and before sending `Ctrl+V`; negative values become zero |
 | `ClipboardRestoreDelay` | integer | `120` | Milliseconds to wait after `Ctrl+V` and before restoring the original clipboard text; negative values become zero |
-| `RequestFailedNotification` | boolean | `false` | Pastes `[request failed]` after request failure or cancellation and `[empty result]` after empty extraction |
-| `StopTaskHotkey` | string | `""` | Optional hotkey that cancels active HTTP work and clears queued tasks |
+| `UseSendInput` | boolean | `false` | Outputs Unicode text with SendInput; clipboard write/restore delays do not apply to output |
+| `RequestFailedNotification` | boolean | `false` | Inputs `[request failed]` after request failure; cancellation, extraction errors, and empty strings produce no placeholder |
+| `StopTaskHotkey` | string | `""` | Optional hotkey that cancels active HTTP/SendInput work and clears queued tasks |
 | `HotKeyConfig` | array | 10 entries | Task definitions; the first eight default hotkeys are `ctrl+f1` through `ctrl+f8`, but every default prompt is empty |
 | `HotKeyHook` | boolean | `false` | Uses `WH_KEYBOARD_LL` when true and `RegisterHotKey` when false |
 | `DEBUG` | boolean | `false` | Prints request, queue, copy, paste, and other diagnostic errors |
@@ -312,7 +323,8 @@ Run the built-in help for the authoritative list:
 
 | Option | Purpose |
 |---|---|
-| `--request-failed-notification <BOOL>` | Enables or disables failure and empty-result placeholder pasting |
+| `--use-sendinput <BOOL>` | Enables or disables Unicode SendInput; omitting the option preserves the configuration |
+| `--request-failed-notification <BOOL>` | Enables or disables request-failure placeholder output |
 
 ### Debug
 
@@ -392,29 +404,36 @@ Example:
 {
   "Prompt": "Summarize the following text.",
   "HotKey": "ctrl+f3",
-  "ExtraConfig": "{\"APIEndpoint\":\"https://api.example.com/v1/chat/completions\",\"Token\":\"task-token\",\"TEXTPath\":\"choices[0].message.content\",\"model\":\"task-model\"}"
+  "ExtraConfig": "{\"APIEndpoint\":\"https://api.example.com/v1/chat/completions\",\"Token\":\"task-token\",\"TEXTPath\":\"$.choices[0].message.content\",\"model\":\"task-model\"}"
 }
 ```
 
 ## Response extraction
 
-`TEXTPath` uses dot-separated object keys and supports one or more array indexes on each token:
+`TEXTPath` uses standard JSONPath, parsed by `serde_json_path`. The default is `$.choices[0].message.content`. Existing paths such as `choices[0].message.content` must be changed to start with `$`; the old dot-path syntax is no longer accepted.
 
-```text
-choices[0].message.content
-results[0].alternatives[0].transcript
-data.items[0][1].text
+| Selector | Example |
+|---|---|
+| Nested fields and arrays | `$.choices[0].message.content` |
+| Consecutive array indexes | `$.data.items[0][1].text` |
+| Last array element | `$.segments[-1].text` |
+| Keys containing dots or spaces | `$['result.text']`, `$['recognition result']['text-value']` |
+| Filter | `$.segments[?@.id == 42].text` |
+| Wildcard, slice, recursive search | `$.segments[*].text`, `$.segments[0:1].text`, `$..text` |
+
+Global paths and non-empty per-entry overrides are validated at startup, after CLI overrides, and compiled expressions are reused for tasks. A blank per-entry override continues to inherit the global path. An empty global path or invalid expression prevents startup before any request is sent.
+
+Every query must match **exactly one node**. Strings, numbers, and booleans become text; objects, arrays, and `null` are rejected. STP does not take the first match, join matches, or fall back to other fields.
+
+For example, given:
+
+```json
+{"segments":[{"id":1,"text":"first"},{"id":42,"text":"last"}]}
 ```
 
-Strings, numbers, and booleans are converted to text. Objects, arrays, and `null` are not valid final values.
+`$.segments[?@.id == 42].text` returns `last`; `$.segments[*].text` fails with two matches. Appending `[0]` applies to each selected JSON value, not to the query result list.
 
-If the configured path does not produce a value, STP tries:
-
-1. The top-level string field `text`.
-2. Any non-empty top-level string field.
-3. An empty result.
-
-A non-JSON response or an unusable JSON value produces an empty result. When `RequestFailedNotification=true`, STP pastes `[empty result]`; otherwise it remains silent.
+Invalid JSON, zero matches, multiple matches (including the actual count), and unsupported value types are reported as extraction errors. They do not retry the HTTP request or output a placeholder. With `DEBUG=true`, the original response body is printed for diagnosis. An empty string is a successful result and produces no output, even when `RequestFailedNotification=true`.
 
 ## Hotkeys, queue, and stop behavior
 
@@ -445,10 +464,10 @@ Task behavior:
 
 - The application queue holds at most 64 task IDs and one worker processes them serially.
 - When the queue is full, new tasks are dropped instead of blocking the keyboard callback.
-- `StopTaskHotkey` cancels the current HTTP request or backoff wait and clears tasks waiting in the application queue.
-- When `RequestFailedNotification=true`, canceling an active request follows the request-error path and may paste `[request failed]`.
+- `StopTaskHotkey` cancels the current HTTP request, backoff wait, or SendInput output and clears tasks waiting in the application queue.
+- Cancellation does not output a placeholder. Already injected text cannot be recalled.
 - The stop action does not exit STP. New task hotkeys continue to work afterward.
-- Closing STP cancels active HTTP work, clears the queue, releases registered hotkeys or the hook, and waits for the worker to finish.
+- Closing STP cancels active HTTP/SendInput work, clears the queue, releases registered hotkeys or the hook, and waits for the worker to finish.
 
 ## Clipboard and automatic replacement
 
@@ -473,7 +492,11 @@ Paste sequence:
 
 Clipboard write retries wait 50 ms between attempts. `OpenClipboard` itself is retried for about one second.
 
-The project deliberately uses `keybd_event` and does not use `SendInput`. Some applications, elevated windows, remote sessions, security software, or clipboard managers may block simulated keys or clipboard access. If replacement is unreliable, increase the clipboard delays and test in a simple application such as Notepad.
+With `UseSendInput=true` (or `--use-sendinput true`), output uses `SendInput` and `KEYEVENTF_UNICODE` without reading or writing the clipboard. This includes successful results and request-failure placeholders. Selection copying still follows the clipboard flow above. The two clipboard output delays keep their configured values but do not affect SendInput.
+
+Text is encoded as UTF-16 in batches of at most 128 code units. Surrogate pairs and each key-down/key-up pair remain in the same batch. CRLF and LF become CR; newlines and Tab use Unicode events. Before each batch, STP waits up to two seconds for Ctrl, Shift, Alt, and Win to be released. Waiting and remaining batches can be canceled.
+
+STP checks the number of injected events and reports zero or partial delivery, or cancellation after output has begun. It never switches channels or automatically resends text. A clipboard restore failure after a successful paste is reported separately. Some applications or elevated windows may reject simulated input; SendInput success only confirms event injection, not consumption by the target application.
 
 ## HTTP, retries, and cancellation
 
@@ -482,7 +505,7 @@ The project deliberately uses `keybd_event` and does not use `SendInput`. Some a
 - Any HTTP `2xx` status is treated as success. Other final statuses include the status code and complete response body in the request error.
 - `MaxRetry` counts total attempts, not retries after the first attempt.
 - Backoff starts at `RetryBaseDelay` and doubles after each failed attempt.
-- Request cancellation and retry waits are cooperative and immediate. Clipboard operations are blocking and are not covered by the cancellation token.
+- HTTP and retry waits can be canceled, as can SendInput waits and remaining batches. A blocking clipboard operation already running finishes before cancellation takes effect.
 - `RequestTimeout` covers one complete attempt, including redirects and response-body reading.
 - The client does not use environment or system proxy settings.
 - Gzip response decoding is enabled; Brotli and Zstandard are not enabled by default.
@@ -544,7 +567,7 @@ cargo check --locked \
   --all-targets
 ```
 
-GitHub Actions runs these checks, builds `stp.exe`, verifies that the binary does not import `SendInput` or unexpected MinGW runtime DLLs, generates Rust dependency license material, and updates the `Latest` release.
+GitHub Actions runs these checks, builds `stp.exe`, verifies that the binary imports `keybd_event`, `SendInput`, and `GetAsyncKeyState` and has no unexpected MinGW runtime DLLs, generates Rust dependency license material, and updates the `Latest` release.
 
 ## Security and privacy
 
@@ -554,13 +577,13 @@ GitHub Actions runs these checks, builds `stp.exe`, verifies that the binary doe
 - `DEBUG=true` may print endpoint details and error response bodies containing sensitive content.
 - The client bypasses system proxy settings. Configure routing at a trusted gateway or endpoint if a proxy is required.
 - Clipboard backup and restoration are best-effort and text-only. Sensitive clipboard text is temporarily held in process memory.
-- Automatic paste targets whichever application is in the foreground when the result is ready.
+- Text output targets whichever application is in the foreground when the result is ready.
 
 ## Implementation constraints
 
 - Hotkeys use `RegisterHotKey` or `WH_KEYBOARD_LL`.
 - Clipboard access uses Win32 `CF_UNICODETEXT` APIs.
-- Copy and paste use `keybd_event`; `SendInput` is intentionally forbidden.
+- Selection copy and clipboard paste use `keybd_event`; optional Unicode output uses `SendInput` without fallback.
 - Requests are JSON, not multipart or streaming requests.
 - Tasks execute through one bounded queue and one worker.
 - No GUI, tray integration, Windows notification, local model, or external helper executable is included.
@@ -573,7 +596,8 @@ GitHub Actions runs these checks, builds `stp.exe`, verifies that the binary doe
 | `src/app.rs` | Task queue, worker, cancellation, request orchestration, and placeholder output |
 | `src/hotkey/` | Hotkey parsing plus `RegisterHotKey` and low-level hook backends |
 | `src/clipboard.rs` | Unicode clipboard copy, paste, retry, and restoration flow |
-| `src/keyboard.rs` | `keybd_event`-compatible `Ctrl+C` and `Ctrl+V` simulation |
+| `src/keyboard.rs` | `keybd_event`-compatible chords and Win32 Unicode SendInput |
+| `src/text_input.rs` | Output channel selection, Unicode batching, cancellation, and delivery errors |
 | `src/request.rs` | Request payload construction and `ExtraConfig` merging |
 | `src/response.rs` | `TEXTPath` parsing and response extraction |
 | `src/netclient.rs` | HTTP client, redirects, timeout, retry, TLS, and cancellation |

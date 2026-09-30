@@ -33,6 +33,12 @@ pub enum TextIoError {
     CopyTimeout,
     #[error("failed to write clipboard")]
     WriteFailed,
+    #[error("failed to restore clipboard (paste sent: {paste_sent}): {source}")]
+    RestoreFailed {
+        #[source]
+        source: ClipboardError,
+        paste_sent: bool,
+    },
 }
 
 pub trait Clipboard: Send + Sync {
@@ -103,14 +109,17 @@ impl Manager {
         }
     }
 
-    fn restore_after(&self, original: &str, delay: Duration) {
+    fn restore_after(&self, original: &str, delay: Duration) -> Result<(), ClipboardError> {
         self.sleeper.sleep(delay);
+        let mut last_error = None;
         for _ in 0..ATTEMPTS {
-            if self.clipboard.write_all(original).is_ok() {
-                break;
+            match self.clipboard.write_all(original) {
+                Ok(()) => return Ok(()),
+                Err(error) => last_error = Some(error),
             }
             self.sleeper.sleep(RETRY_DELAY);
         }
+        Err(last_error.expect("at least one restore attempt"))
     }
 }
 
@@ -142,7 +151,7 @@ impl TextIo for Manager {
                 }
             }
         })();
-        self.restore_after(&original, COPY_RESTORE_DELAY);
+        let _ = self.restore_after(&original, COPY_RESTORE_DELAY);
         result
     }
 
@@ -158,8 +167,12 @@ impl TextIo for Manager {
             }
             Err(TextIoError::WriteFailed)
         })();
-        self.restore_after(&original, self.restore_delay);
-        result
+        let restored = self.restore_after(&original, self.restore_delay);
+        result?;
+        restored.map_err(|source| TextIoError::RestoreFailed {
+            source,
+            paste_sent: true,
+        })
     }
 }
 

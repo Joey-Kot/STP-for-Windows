@@ -3,6 +3,59 @@
 
 use thiserror::Error;
 
+#[cfg(windows)]
+pub(crate) struct WindowsUnicode;
+
+#[cfg(windows)]
+impl WindowsUnicode {
+    pub(crate) fn modifiers_pressed(&self) -> bool {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+        };
+        [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+            .iter()
+            .any(|key| unsafe { GetAsyncKeyState(*key as i32) < 0 })
+    }
+
+    pub(crate) fn send(&self, units: &[u16]) -> (usize, u32) {
+        use windows_sys::Win32::{
+            Foundation::{GetLastError, SetLastError},
+            UI::Input::KeyboardAndMouse::{
+                INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+                SendInput,
+            },
+        };
+        let events: Vec<INPUT> = units
+            .iter()
+            .flat_map(|unit| {
+                [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP].map(|flags| INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: 0,
+                            wScan: *unit,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                })
+            })
+            .collect();
+        // SAFETY: all entries are initialized keyboard events, the slice stays
+        // alive for the call, and cbSize matches the Win32 INPUT layout.
+        unsafe {
+            SetLastError(0);
+            let sent = SendInput(
+                events.len() as u32,
+                events.as_ptr(),
+                size_of::<INPUT>() as i32,
+            );
+            (sent as usize, GetLastError())
+        }
+    }
+}
+
 const KEYEVENTF_KEYUP: u32 = 0x0002;
 const KEYEVENTF_SCANCODE: u32 = 0x0008;
 const VIRTUAL_KEY_OFFSET: i32 = 0x0fff;

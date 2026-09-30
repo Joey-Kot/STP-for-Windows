@@ -72,10 +72,13 @@ jobs:
           test -s docs/rust-rewrite-contract.md
           test -s THIRD_PARTY_LICENSES/keybd_event-MIT.txt
           test -s THIRD_PARTY_LICENSES/RUST-DEPENDENCIES.html
-          if rg --hidden --glob '!docs/rust-rewrite-contract.md' --glob '!target/**' --glob '!*.md' 'SendInput' src tests Cargo.toml; then
-            echo 'SendInput is forbidden in the implementation'
-            exit 1
-          fi
+          x86_64-w64-mingw32-objdump -p dist/package/stp.exe > dist/stp-imports.txt
+          for api in keybd_event SendInput GetAsyncKeyState; do
+            if ! rg -w "$api" dist/stp-imports.txt; then
+              echo "Missing text input API import: $api"
+              exit 1
+            fi
+          done
 
       - name: Check Windows runtime dependencies
         run: |

@@ -52,6 +52,10 @@ async fn run() -> Result<(), u8> {
         }
     };
     cli.apply_to(&mut config);
+    config.validate().map_err(|error| {
+        eprintln!("[main] {error}");
+        1
+    })?;
 
     let network = Arc::new(
         Client::new(ClientOptions {

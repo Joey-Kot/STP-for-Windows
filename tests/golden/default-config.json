@@ -4,7 +4,7 @@
   "Model": "",
   "Temperature": 0.0,
   "Max_Tokens": 0,
-  "TEXTPath": "choices[0].message.content",
+  "TEXTPath": "$.choices[0].message.content",
   "ExtraConfig": "",
   "RequestTimeout": 30,
   "MaxRetry": 3,
@@ -14,6 +14,7 @@
   "ClipboardTimeout": 1000,
   "ClipboardWriteDelay": 80,
   "ClipboardRestoreDelay": 120,
+  "UseSendInput": false,
   "RequestFailedNotification": false,
   "StopTaskHotkey": "",
   "HotKeyConfig": [

@@ -2,7 +2,7 @@
 
 # STP for Windows
 
-STP for Windows 是一个面向 Windows x86_64 的后台选中文本处理客户端。它把全局快捷键变成可配置的 LLM 文本操作：在任意应用中选中文本并按下快捷键后，STP 会复制选区，把选中文本和对应提示词发送到兼容的 JSON HTTP 接口，从响应中提取结果，粘贴回当前输入位置，并尝试恢复原剪贴板文本。
+STP for Windows 是一个面向 Windows x86_64 的后台选中文本处理客户端。它把全局快捷键变成可配置的 LLM 文本操作：在任意应用中选中文本并按下快捷键后，STP 会复制选区，把选中文本和对应提示词发送到兼容的 JSON HTTP 接口，使用 JSONPath 从响应中提取唯一结果，再通过剪贴板粘贴或可选的 Unicode SendInput 通道输出。剪贴板操作结束后会尝试恢复原文本。
 
 `stp.exe`：使用原生 Win32 热键、剪贴板 API 和键盘事件的便携式命令行后台程序。
 
@@ -22,13 +22,14 @@ STP for Windows 是一个面向 Windows x86_64 的后台选中文本处理客户
   - 单条 `ExtraConfig` 的优先级高于全局 `ExtraConfig` 和内置请求字段。
 - **串行任务队列与取消**
   - 单工作者按触发顺序处理任务，等待队列容量为 64。
-  - 可选停止热键会取消当前 HTTP 请求或重试等待并清空队列，但不会退出 STP。
+  - 可选停止热键会取消当前 HTTP 请求、重试等待或 SendInput 输出并清空队列，但不会退出 STP。
 - **尽量保留剪贴板的原位替换**
   - 保存原有 Unicode 剪贴板文本，通过 Win32 `keybd_event` 发送 `Ctrl+C` 和 `Ctrl+V`，每次操作后尝试恢复原文本。
   - 可以调整复制超时和粘贴前后的等待时间，以兼容响应较慢的应用。
+  - 可选的 `UseSendInput` 使用 Unicode 事件输出文本，输出时不读写剪贴板；复制选区仍使用剪贴板。
 - **网络控制与诊断**
   - 支持单次请求超时、指数退避重试、HTTP/2 协商、TLS 证书校验开关和调试日志。
-  - 可以在失败或提取结果为空时粘贴 `[request failed]` 或 `[empty result]`。
+  - 可以在请求失败时输出 `[request failed]`；提取错误和空字符串不输出任何文本。
 
 ## 下载
 
@@ -49,7 +50,7 @@ flowchart LR
         Build["提示词 + 选中文本<br/>JSON 请求构造"]
         HTTP["HTTP 客户端<br/>超时 + 重试 + 取消"]
         Extract["JSON 响应<br/>TEXTPath 提取"]
-        Paste["写入结果 + Ctrl+V<br/>恢复剪贴板"]
+        Paste["剪贴板粘贴或 Unicode SendInput"]
     end
 
     Config["config.json<br/>全局与单项设置"]
@@ -64,7 +65,7 @@ flowchart LR
     Config --> Build
     Config --> HTTP
     Config --> Paste
-    Stop -->|"取消当前 HTTP 工作<br/>并清空等待任务"| Queue
+    Stop -->|"取消当前任务<br/>并清空等待任务"| Queue
 ```
 
 ## 处理流程
@@ -90,20 +91,28 @@ sequenceDiagram
     alt HTTP 请求或重试等待期间触发停止热键
         User->>STP: 停止任务
         STP-->>API: 取消当前请求
-        STP->>STP: 清空等待任务
-        opt 已启用 RequestFailedNotification
-            STP->>Target: 粘贴 [request failed]
-        end
+        STP->>STP: 清空等待任务，不输出文本
     else 收到成功的 2xx 响应
         API-->>STP: JSON 响应
-        STP->>STP: 按 TEXTPath 提取文本
-        STP->>Clipboard: 保存原文本并写入处理结果
-        STP->>STP: 等待 ClipboardWriteDelay
-        STP->>Target: 通过 keybd_event 发送 Ctrl+V
-        STP->>STP: 等待 ClipboardRestoreDelay
-        STP->>Clipboard: 恢复原文本
-    else 请求最终失败或提取结果为空
-        STP->>Target: 按配置决定是否粘贴占位文本
+        STP->>STP: 查询 TEXTPath，要求唯一标量
+        alt JSON、匹配数量或值类型错误
+            STP->>STP: 报告提取错误，不重试、不输出
+        else 空字符串
+            STP->>STP: 完成任务，不输出
+        else 非空文本
+            alt UseSendInput
+                STP->>STP: 等待修饰键释放，检查取消状态
+                STP->>Target: 分批发送 UTF-16，出错或取消时停止
+            else 剪贴板输出
+                STP->>Clipboard: 保存原文本并写入处理结果
+                STP->>STP: 等待 ClipboardWriteDelay
+                STP->>Target: 通过 keybd_event 发送 Ctrl+V
+                STP->>STP: 等待 ClipboardRestoreDelay
+                STP->>Clipboard: 恢复原文本
+            end
+        end
+    else 请求最终失败
+        STP->>Target: 按配置通过所选通道输出占位文本
     end
 ```
 
@@ -112,15 +121,15 @@ STP 不会并行发送多个请求。所有热键任务都按队列顺序逐个�
 ## 功能范围与当前限制
 
 - 正式 Release 只提供 Windows x86_64 版本。虽然非 Windows 构建可用于测试，但剪贴板、按键模拟和全局热键只在 Windows 上可用。
-- STP 是控制台后台程序，不提供 GUI、系统托盘、Windows Toast 通知或逐字符输入模式。
-- 目标应用必须支持普通 `Ctrl+C` 和 `Ctrl+V`，并能通过 `CF_UNICODETEXT` 提供复制文本。
+- STP 是控制台后台程序，不提供 GUI、系统托盘或 Windows Toast 通知。
+- 目标应用必须支持 `Ctrl+C`，并能通过 `CF_UNICODETEXT` 提供复制文本。输出时需支持所选通道的 `Ctrl+V` 或 Unicode SendInput。
 - 程序只备份和恢复 Unicode 文本格式。图片、文件列表、富文本、HTML 和其他剪贴板格式不会保留。
 - 任务轮到工作者处理后，选中文本和提示词才会发送到 API。项目不包含本地模型或离线处理后端。
 - 接口必须接收 JSON 并返回 JSON；非 JSON 响应无法提取文本。
-- 请求期间切换前台窗口，会改变最终 `Ctrl+V` 的目标应用。
-- 停止热键只取消 HTTP 请求和重试等待，不能中断已经开始的剪贴板复制或粘贴。
+- 请求期间切换前台窗口，会改变最终输出的目标应用。
+- 停止热键可取消 HTTP 请求、重试等待、SendInput 等待和剩余批次，不能中断已经开始的剪贴板复制或粘贴。
 - 按住快捷键可能产生重复任务事件。热键事件通道或任务队列已满时，突发事件可能被丢弃。
-- `RequestFailedNotification` 不是 Windows 通知开关，它只控制是否向前台应用粘贴占位文本。
+- `RequestFailedNotification` 不是 Windows 通知开关，它只控制是否通过所选通道输出请求失败占位文本。
 
 ## 运行要求
 
@@ -155,7 +164,7 @@ STP 不会并行发送多个请求。所有热键任务都按队列顺序逐个�
   "APIEndpoint": "https://api.example.com/v1/chat/completions",
   "Token": "sk-xxx",
   "Model": "your-model",
-  "TEXTPath": "choices[0].message.content",
+  "TEXTPath": "$.choices[0].message.content",
   "RequestTimeout": 30,
   "MaxRetry": 3,
   "RetryBaseDelay": 0.5,
@@ -164,6 +173,7 @@ STP 不会并行发送多个请求。所有热键任务都按队列顺序逐个�
   "ClipboardTimeout": 1000,
   "ClipboardWriteDelay": 80,
   "ClipboardRestoreDelay": 120,
+  "UseSendInput": false,
   "RequestFailedNotification": true,
   "StopTaskHotkey": "alt+f12",
   "HotKeyConfig": [
@@ -226,7 +236,7 @@ Start-Process `
 | `Model` | string | `""` | 非空时加入根级 `model` 请求字段 |
 | `Temperature` | number | `0.0` | 合并 `ExtraConfig` 前加入根级 `temperature` 字段 |
 | `Max_Tokens` | integer | `0` | 大于零时才加入 `max_tokens` |
-| `TEXTPath` | string | `"choices[0].message.content"` | 从响应 JSON 提取结果的默认点分路径 |
+| `TEXTPath` | string | `"$.choices[0].message.content"` | 从响应中选择唯一字符串、数字或布尔值的标准 JSONPath |
 | `ExtraConfig` | string | `""` | 合并到每次请求中的字符串化 JSON 对象 |
 
 ### 网络字段
@@ -246,8 +256,9 @@ Start-Process `
 | `ClipboardTimeout` | integer | `1000` | 等待非空复制结果的最长毫秒数；负值按零处理 |
 | `ClipboardWriteDelay` | integer | `80` | 写入处理结果后、发送 `Ctrl+V` 前的等待毫秒数；负值按零处理 |
 | `ClipboardRestoreDelay` | integer | `120` | 发送 `Ctrl+V` 后、恢复原剪贴板前的等待毫秒数；负值按零处理 |
-| `RequestFailedNotification` | boolean | `false` | 请求失败或取消时粘贴 `[request failed]`，提取为空时粘贴 `[empty result]` |
-| `StopTaskHotkey` | string | `""` | 可选停止热键，用于取消当前 HTTP 工作并清空队列 |
+| `UseSendInput` | boolean | `false` | 使用 Unicode SendInput 输出；两个剪贴板输出延迟不作用于此通道 |
+| `RequestFailedNotification` | boolean | `false` | 请求失败时输出 `[request failed]`；取消、提取错误和空字符串不输出占位文本 |
+| `StopTaskHotkey` | string | `""` | 可选停止热键，用于取消当前 HTTP/SendInput 工作并清空队列 |
 | `HotKeyConfig` | array | 10 项 | 任务配置；前八项默认热键为 `ctrl+f1` 至 `ctrl+f8`，但所有默认提示词都为空 |
 | `HotKeyHook` | boolean | `false` | 为 true 时使用 `WH_KEYBOARD_LL`，为 false 时使用 `RegisterHotKey` |
 | `DEBUG` | boolean | `false` | 输出请求、队列、复制、粘贴等诊断错误 |
@@ -312,7 +323,8 @@ Start-Process `
 
 | 参数 | 用途 |
 |---|---|
-| `--request-failed-notification <BOOL>` | 启用或禁用失败和空结果占位文本 |
+| `--use-sendinput <BOOL>` | 显式开启或关闭 Unicode SendInput；未指定时沿用配置值 |
+| `--request-failed-notification <BOOL>` | 启用或禁用请求失败占位文本 |
 
 ### Debug
 
@@ -392,29 +404,36 @@ Start-Process `
 {
   "Prompt": "总结以下文本。",
   "HotKey": "ctrl+f3",
-  "ExtraConfig": "{\"APIEndpoint\":\"https://api.example.com/v1/chat/completions\",\"Token\":\"task-token\",\"TEXTPath\":\"choices[0].message.content\",\"model\":\"task-model\"}"
+  "ExtraConfig": "{\"APIEndpoint\":\"https://api.example.com/v1/chat/completions\",\"Token\":\"task-token\",\"TEXTPath\":\"$.choices[0].message.content\",\"model\":\"task-model\"}"
 }
 ```
 
 ## 响应文本提取
 
-`TEXTPath` 使用点号分隔对象字段，并支持在每个字段后使用一个或多个数组索引：
+`TEXTPath` 使用 `serde_json_path` 解析标准 JSONPath，默认值为 `$.choices[0].message.content`。旧配置中的 `choices[0].message.content` 等路径必须补上 `$` 前缀，不再兼容旧的点分路径语法。
 
-```text
-choices[0].message.content
-results[0].alternatives[0].transcript
-data.items[0][1].text
+| 选择方式 | 示例 |
+|---|---|
+| 嵌套字段和数组 | `$.choices[0].message.content` |
+| 连续数组索引 | `$.data.items[0][1].text` |
+| 数组最后一项 | `$.segments[-1].text` |
+| 包含点号或空格的字段名 | `$['result.text']`、`$['recognition result']['text-value']` |
+| 条件过滤 | `$.segments[?@.id == 42].text` |
+| 通配符、切片、递归查找 | `$.segments[*].text`、`$.segments[0:1].text`、`$..text` |
+
+全局路径和非空的单条覆盖路径在应用 CLI 覆盖后、启动时校验，并缓存解析后的表达式供任务复用。空白的单条覆盖继续沿用全局路径；全局路径为空或表达式非法时，启动失败，不会发送请求。
+
+查询必须**恰好匹配一个节点**。字符串、数字和布尔值会转换为文本；对象、数组和 `null` 会报错。不自动取第一项、不拼接多项，也不尝试其他字段。
+
+例如，响应为：
+
+```json
+{"segments":[{"id":1,"text":"first"},{"id":42,"text":"last"}]}
 ```
 
-字符串、数字和布尔值会转换为文本；对象、数组和 `null` 不能作为最终结果。
+`$.segments[?@.id == 42].text` 得到 `last`；`$.segments[*].text` 匹配两项，会报错。在末尾追加 `[0]` 会作用于每个选中的 JSON 值，不能取整个查询结果列表的第一项。
 
-配置路径无法取得值时，STP 依次尝试：
-
-1. 顶层字符串字段 `text`。
-2. 任意一个非空顶层字符串字段。
-3. 空结果。
-
-非 JSON 响应或无法使用的 JSON 值会产生空结果。`RequestFailedNotification=true` 时粘贴 `[empty result]`，否则保持静默。
+非法 JSON、零项匹配、多项匹配（包含实际数量）和不支持的值类型会分别报告提取错误，不重试 HTTP 请求，也不输出占位文本。启用 `DEBUG=true` 时输出原始响应正文，便于排查。空字符串属于成功结果，不输出文本，即使启用了 `RequestFailedNotification` 也不输出占位文本。
 
 ## 快捷键、任务队列与停止行为
 
@@ -445,10 +464,10 @@ data.items[0][1].text
 
 - 应用队列最多保存 64 个任务 ID，由一个工作者串行处理。
 - 队列已满时，新任务会直接丢弃，不会阻塞键盘回调。
-- `StopTaskHotkey` 会取消当前 HTTP 请求或退避等待，并清空应用队列中尚未处理的任务。
-- `RequestFailedNotification=true` 时，取消当前请求会进入请求错误流程，可能粘贴 `[request failed]`。
+- `StopTaskHotkey` 会取消当前 HTTP 请求、退避等待或 SendInput 输出，并清空应用队列中尚未处理的任务。
+- 取消时不输出占位文本；已经注入的文本无法撤回。
 - 停止操作不会退出 STP，之后仍可继续触发普通任务快捷键。
-- 关闭 STP 时会取消当前 HTTP 工作、清空队列、释放注册热键或键盘钩子，并等待工作者结束。
+- 关闭 STP 时会取消当前 HTTP/SendInput 工作、清空队列、释放注册热键或键盘钩子，并等待工作者结束。
 
 ## 剪贴板与自动替换
 
@@ -473,7 +492,11 @@ STP 只使用 Windows `CF_UNICODETEXT` 剪贴板格式。
 
 剪贴板写入重试之间等待 50 ms；`OpenClipboard` 本身会在大约一秒内持续重试。
 
-项目明确使用 `keybd_event`，不使用 `SendInput`。部分应用、管理员权限窗口、远程会话、安全软件或剪贴板管理器可能阻止模拟按键或剪贴板访问。如果替换不稳定，可以适当增大两个剪贴板延迟，并先在记事本等简单应用中测试。
+设置 `UseSendInput=true` 或传入 `--use-sendinput true` 后，输出通过 `SendInput` 和 `KEYEVENTF_UNICODE` 完成，不读写剪贴板。正常结果和请求失败占位文本共用此通道。复制选区仍执行上述剪贴板流程；两个剪贴板输出延迟保留配置值，但不作用于 SendInput。
+
+文本按 UTF-16 编码，每批最多 128 个编码单元，不拆分代理对或按下、释放事件组。CRLF 和 LF 统一为 CR；换行与 Tab 均使用 Unicode 字符事件。每批发送前最多等待两秒，直到 Ctrl、Shift、Alt、Win 全部释放；等待和剩余批次均可取消。
+
+程序会检查实际注入事件数，区分未发送、部分发送和发送后取消。不会切换到其他通道，也不会自动重发文本。剪贴板通道会单独报告“粘贴已发送，但恢复剪贴板失败”。部分应用或管理员权限窗口可能拒绝模拟输入；SendInput 成功只表示事件已注入，不表示目标应用一定接收了文本。
 
 ## HTTP、重试与取消
 
@@ -482,7 +505,7 @@ STP 只使用 Windows `CF_UNICODETEXT` 剪贴板格式。
 - 任意 HTTP `2xx` 状态都视为成功；其他最终状态会把状态码和完整响应正文写入请求错误。
 - `MaxRetry` 表示总尝试次数，不是第一次请求之外的重试次数。
 - 退避从 `RetryBaseDelay` 开始，每次失败后翻倍。
-- HTTP 请求和重试等待可以立即取消；剪贴板操作是阻塞流程，不受取消令牌控制。
+- HTTP 请求、重试等待、SendInput 等待和剩余批次可以取消；已经开始的阻塞剪贴板操作结束后才响应取消。
 - `RequestTimeout` 覆盖一次完整尝试，包括重定向和响应正文读取。
 - 客户端不使用环境变量或系统代理配置。
 - 启用 gzip 响应解压，默认不启用 Brotli 和 Zstandard。
@@ -544,7 +567,7 @@ cargo check --locked \
   --all-targets
 ```
 
-GitHub Actions 会执行这些检查、构建 `stp.exe`、确认程序没有导入 `SendInput` 或意外的 MinGW 运行时 DLL、生成 Rust 依赖许可证材料，并更新 `Latest` Release。
+GitHub Actions 会执行这些检查、构建 `stp.exe`、确认程序导入 `keybd_event`、`SendInput`、`GetAsyncKeyState` 且没有意外的 MinGW 运行时 DLL、生成 Rust 依赖许可证材料，并更新 `Latest` Release。
 
 ## 安全与隐私
 
@@ -554,13 +577,13 @@ GitHub Actions 会执行这些检查、构建 `stp.exe`、确认程序没有导�
 - `DEBUG=true` 可能输出接口信息和包含敏感内容的错误响应正文。
 - 客户端绕过系统代理设置。如需代理，应在可信网关或接口侧完成路由。
 - 剪贴板备份和恢复只处理文本，并且属于尽力而为；敏感剪贴板文本会暂时保存在进程内存中。
-- 自动粘贴会发送到结果就绪时处于前台的应用。
+- 文本会输出到结果就绪时处于前台的应用。
 
 ## 实现约束
 
 - 全局快捷键使用 `RegisterHotKey` 或 `WH_KEYBOARD_LL`。
 - 剪贴板使用 Win32 `CF_UNICODETEXT` API。
-- 复制和粘贴使用 `keybd_event`，明确禁止使用 `SendInput`。
+- 复制选区和剪贴板粘贴使用 `keybd_event`；可选 Unicode 输出使用 `SendInput`，不自动回退。
 - 请求为 JSON，不使用 multipart，也不支持流式处理。
 - 所有任务通过一个有界队列和一个工作者执行。
 - 项目不包含 GUI、系统托盘、Windows 通知、本地模型或外部辅助程序。
@@ -573,7 +596,8 @@ GitHub Actions 会执行这些检查、构建 `stp.exe`、确认程序没有导�
 | `src/app.rs` | 任务队列、工作者、取消、请求编排和占位输出 |
 | `src/hotkey/` | 快捷键解析、`RegisterHotKey` 和低级键盘钩子后端 |
 | `src/clipboard.rs` | Unicode 剪贴板复制、粘贴、重试与恢复流程 |
-| `src/keyboard.rs` | 兼容 `keybd_event` 行为的 `Ctrl+C` 和 `Ctrl+V` 模拟 |
+| `src/keyboard.rs` | 兼容 `keybd_event` 的组合键模拟和 Win32 Unicode SendInput |
+| `src/text_input.rs` | 输出通道选择、Unicode 分批、取消和发送错误处理 |
 | `src/request.rs` | 请求构造和 `ExtraConfig` 合并 |
 | `src/response.rs` | `TEXTPath` 解析和响应文本提取 |
 | `src/netclient.rs` | HTTP、重定向、超时、重试、TLS 与取消 |

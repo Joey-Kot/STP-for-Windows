@@ -20,6 +20,8 @@ fn missing_fields_keep_defaults_and_unknown_fields_are_ignored() {
     assert_eq!(config.RequestTimeout, 30);
     assert_eq!(config.ClipboardWriteDelay, 80);
     assert_eq!(config.ClipboardRestoreDelay, 120);
+    assert!(!config.UseSendInput);
+    assert_eq!(config.TEXTPath, "$.choices[0].message.content");
     assert!(config.EnableHTTP2);
     assert_eq!(config.HotKeyConfig.len(), 1);
     assert_eq!(config.HotKeyConfig[0].Prompt, "x");
@@ -78,7 +80,7 @@ fn clipboard_delay_cli_values_override_only_when_present() {
 fn help_uses_grouped_sister_cli_layout() {
     let help = Cli::command().render_long_help().to_string();
     for expected in [
-        "Process selected text through an LLM API and paste the result.",
+        "Process selected text through an LLM API and input the result.",
         "Usage: stp.exe [OPTIONS]",
         "Options:",
         "General:",
@@ -90,6 +92,8 @@ fn help_uses_grouped_sister_cli_layout() {
         "-V, --version",
         "--clipboard-write-delay <MS>",
         "--clipboard-restore-delay <MS>",
+        "--use-sendinput <BOOL>",
+        "Standard JSONPath",
     ] {
         assert!(help.contains(expected), "missing help text: {expected}");
     }
@@ -182,6 +186,7 @@ fn empty_explicit_config_path_starts_from_defaults() {
         clipboard_timeout: None,
         clipboard_write_delay: None,
         clipboard_restore_delay: None,
+        use_sendinput: None,
         request_failed_notification: None,
         stop_task_hotkey: None,
         hotkey_hook: None,
@@ -204,4 +209,57 @@ fn old_single_dash_long_options_are_rejected() {
 fn empty_string_override_is_rejected_as_missing_value() {
     assert!(Cli::try_parse_args(["stp", "--model="]).is_err());
     assert!(Cli::try_parse_args(["stp", "--stop-task-hotkey="]).is_err());
+}
+
+#[test]
+fn sendinput_config_and_cli_preserve_explicit_false_and_absent_values() {
+    for raw in [
+        "{}",
+        r#"{"UseSendInput":null}"#,
+        r#"{"UseSendInput":false}"#,
+    ] {
+        assert!(!serde_json::from_str::<Config>(raw).unwrap().UseSendInput);
+    }
+    let mut config: Config = serde_json::from_str(r#"{"UseSendInput":true}"#).unwrap();
+    Cli::try_parse_args(["stp"]).unwrap().apply_to(&mut config);
+    assert!(config.UseSendInput);
+    for (value, expected) in [("false", false), ("true", true)] {
+        let cli = Cli::try_parse_args(["stp", "--use-sendinput", value]).unwrap();
+        assert!(cli.has_overrides());
+        cli.apply_to(&mut config);
+        assert_eq!(config.UseSendInput, expected);
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            select(&cli, directory.path()).unwrap(),
+            ConfigSelection::Loaded(_)
+        ));
+        assert!(!directory.path().join("config.json").exists());
+    }
+    assert!(Cli::try_parse_args(["stp", "--use-sendinput"]).is_err());
+    assert!(Cli::try_parse_args(["stp", "--use-sendinput=invalid"]).is_err());
+}
+
+#[test]
+fn validates_jsonpath_after_cli_overrides() {
+    let mut config = Config {
+        TEXTPath: "choices[0].message.content".into(),
+        ..Config::default()
+    };
+    assert!(config.validate().is_err());
+    Cli::try_parse_args(["stp", "--text-path", "$.text"])
+        .unwrap()
+        .apply_to(&mut config);
+    config.validate().unwrap();
+    config.HotKeyConfig[0].ExtraConfig = r#"{"TEXTPath":"$.items["}"#.into();
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("HotKeyConfig[0]")
+    );
+    config.HotKeyConfig[0].ExtraConfig = r#"{"TEXTPath":"   "}"#.into();
+    config.validate().unwrap();
+    config.HotKeyConfig[0].ExtraConfig = "not JSON".into();
+    config.validate().unwrap();
 }

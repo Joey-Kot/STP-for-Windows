@@ -23,12 +23,13 @@ texts for the resolved Windows target dependencies.
 Primary direct crates:
 
 - `clap` — MIT OR Apache-2.0
-- `serde`, `serde_json` — MIT OR Apache-2.0
+- `serde`, `serde_json`, `serde_json_path` — MIT OR Apache-2.0
 - `reqwest` — MIT OR Apache-2.0
 - `tokio`, `tokio-util` — MIT
 - `thiserror` — MIT OR Apache-2.0
 - `async-trait` — MIT OR Apache-2.0
 - `url` — MIT OR Apache-2.0
+- `windows-sys` — MIT OR Apache-2.0
 
 ## Project License
 

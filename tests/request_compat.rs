@@ -10,13 +10,13 @@ fn request_merge_cleanup_and_precedence_match_contract() {
     )
     .unwrap();
     let entry = parse_extra_config(
-        r#"{"APIEndpoint":" https://override ","Token":" token ","TEXTPath":" choices[0].text ","model":"","max_tokens":null,"verbosity":"","new_field":false,"zero":0}"#,
+        r#"{"APIEndpoint":" https://override ","Token":" token ","TEXTPath":" $.choices[0].text ","model":"","max_tokens":null,"verbosity":"","new_field":false,"zero":0}"#,
     )
     .unwrap();
     let (overrides, entry) = extract_runtime_overrides(entry);
     assert_eq!(overrides.api_endpoint, "https://override");
     assert_eq!(overrides.token, "token");
-    assert_eq!(overrides.text_path, "choices[0].text");
+    assert_eq!(overrides.text_path, "$.choices[0].text");
 
     let payload = build_payload(BuildInput {
         model: "builtin",

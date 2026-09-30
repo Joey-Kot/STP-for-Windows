@@ -13,3 +13,4 @@ pub mod keyboard;
 pub mod netclient;
 pub mod request;
 pub mod response;
+pub mod text_input;
