@@ -74,7 +74,7 @@ jobs:
           test -s THIRD_PARTY_LICENSES/RUST-DEPENDENCIES.html
           x86_64-w64-mingw32-objdump -p dist/package/stp.exe > dist/stp-imports.txt
           for api in keybd_event SendInput GetAsyncKeyState; do
-            if ! rg -w "$api" dist/stp-imports.txt; then
+            if ! grep -Fw "$api" dist/stp-imports.txt; then
               echo "Missing text input API import: $api"
               exit 1
             fi
@@ -84,7 +84,7 @@ jobs:
         run: |
           imports="$(x86_64-w64-mingw32-objdump -p dist/package/stp.exe | sed -n 's/.*DLL Name: //p' | tr '[:upper:]' '[:lower:]' | sort -u)"
           echo "$imports"
-          if echo "$imports" | rg -i 'libgcc|libstdc\+\+|libwinpthread'; then
+          if echo "$imports" | grep -Ei 'libgcc|libstdc\+\+|libwinpthread'; then
             echo 'Unexpected MinGW runtime DLL dependency'
             exit 1
           fi
@@ -123,7 +123,7 @@ jobs:
             stp-windows-amd64-go.zip.sha256 \
             stp-windows-amd64-rust.zip \
             stp-windows-amd64-rust.zip.sha256; do
-            if gh release view Latest --json assets --jq '.assets[].name' | rg -Fx "$asset"; then
+            if gh release view Latest --json assets --jq '.assets[].name' | grep -Fx "$asset"; then
               gh release delete-asset Latest "$asset" --yes
             fi
           done
